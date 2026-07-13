@@ -1,0 +1,22 @@
+{
+  "name": "sahan-ai-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Sahan AI - professional multi-session WhatsApp linked-device bot",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "check": "node --check index.js && node --check id.js && node --check msg.js && node --check pair.js && node --check reply.js && node --check config.js"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "6.7.23",
+    "express": "^5.1.0",
+    "pino": "^9.7.0",
+    "qrcode": "^1.5.4"
+  }
+}
