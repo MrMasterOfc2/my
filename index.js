@@ -20,7 +20,12 @@ app.get('/api/sessions/:id', (req, res) => {
   catch (error) { res.status(400).json({ success: false, error: error.message }); }
 });
 app.post('/api/sessions', async (req, res) => {
-  try { res.status(201).json({ success: true, session: await sessions.create(req.body.id, req.body.method, req.body.phone) }); }
+  try {
+    const method = req.body.method || 'qr';
+    const phone = String(req.body.phone || '').replace(/\D/g, '');
+    const id = req.body.id || (method === 'pair' ? phone : '');
+    res.status(201).json({ success: true, session: await sessions.create(id, method, phone) });
+  }
   catch (error) { res.status(400).json({ success: false, error: error.message }); }
 });
 app.delete('/api/sessions/:id', async (req, res) => {
