@@ -55,16 +55,17 @@ class SessionManager extends EventEmitter {
   }
 
   async create(rawId, method = 'qr', phone = '') {
-    const id = this.cleanId(rawId);
     if (!['qr', 'pair'].includes(method)) throw new Error('Method must be qr or pair.');
+    const number = String(phone).replace(/\D/g, '');
+    if (method === 'pair' && (number.length < 8 || number.length > 15)) throw new Error('Enter phone number with country code (digits only).');
+    // For phone pairing the WhatsApp number is also a safe default session ID.
+    const id = this.cleanId(rawId || (method === 'pair' ? number : ''));
     if (this.sessions.has(id)) {
       const existing = this.sessions.get(id);
-      if (existing.status === 'open' || existing.status === 'connecting' || existing.status === 'qr-ready') return this.publicState(existing);
+      if (['open', 'connecting', 'qr-ready', 'pair-ready'].includes(existing.status)) return this.publicState(existing);
       await this.stop(id, false);
     }
     if (this.sessions.size >= config.MAX_SESSIONS) throw new Error(`Maximum ${config.MAX_SESSIONS} sessions allowed.`);
-    const number = String(phone).replace(/\D/g, '');
-    if (method === 'pair' && (number.length < 8 || number.length > 15)) throw new Error('Enter phone number with country code (digits only).');
 
     const session = {
       id, method, phone: number, status: 'connecting', qr: null, pairCode: null,
@@ -79,9 +80,6 @@ class SessionManager extends EventEmitter {
   async connect(session) {
     const authPath = path.join(config.SESSION_DIR, session.id);
     fs.mkdirSync(authPath, { recursive: true });
-    await initializeFromGithub(session.id).catch(error =>
-      logger.warn({ error, sessionId: session.id }, 'GitHub auto replies could not be restored')
-    );
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
     let version;
     try { version = (await fetchLatestBaileysVersion()).version; } catch (_) { version = undefined; }
@@ -100,11 +98,17 @@ class SessionManager extends EventEmitter {
     session.socket = socket;
     socket.ev.on('creds.update', saveCreds);
 
-    socket.ev.on('connection.update', update => {
+    socket.ev.on('connection.update', async update => {
       const { connection, lastDisconnect, qr } = update;
       if (qr && session.method === 'qr') this.update(session, { qr, status: 'qr-ready', error: null });
-      if (connection === 'connecting') this.update(session, { status: 'connecting' });
-      if (connection === 'open') this.update(session, { status: 'open', qr: null, pairCode: null, user: socket.user, error: null });
+      if (connection === 'connecting' && !session.pairCode) this.update(session, { status: 'connecting' });
+      if (connection === 'open') {
+        session.replyKey = String(socket.user?.id || session.id).split('@')[0].split(':')[0].replace(/\D/g, '') || session.id;
+        await initializeFromGithub(session.replyKey).catch(error =>
+          logger.warn({ error, sessionId: session.id }, 'GitHub auto replies could not be restored')
+        );
+        this.update(session, { status: 'open', qr: null, pairCode: null, user: socket.user, error: null });
+      }
       if (connection === 'close') {
         const code = new Boom(lastDisconnect?.error).output?.statusCode;
         const loggedOut = code === DisconnectReason.loggedOut;
@@ -124,7 +128,7 @@ class SessionManager extends EventEmitter {
         if (!message.isCommand) {
           // Never auto-reply to the bot's own outgoing messages (prevents loops).
           if (message.fromMe) continue;
-          const automaticReply = matchReply(session.id, message.body);
+          const automaticReply = matchReply(session.replyKey || session.id, message.body);
           if (automaticReply) {
             await socket.sendMessage(message.chat, { text: automaticReply }, { quoted: raw }).catch(error =>
               logger.warn({ error, sessionId: session.id }, 'auto reply failed')
@@ -135,17 +139,32 @@ class SessionManager extends EventEmitter {
         const senderNumber = message.sender.split('@')[0].split(':')[0].replace(/\D/g, '');
         if (!config.PUBLIC_MODE && !config.OWNER_NUMBERS.includes(senderNumber)) continue;
         if (config.AUTO_READ) await socket.readMessages([raw.key]).catch(() => {});
-        await handleCommand(socket, message, session.id).catch(error => logger.error({ error }, 'command failed'));
+        await handleCommand(socket, message, session.replyKey || session.id).catch(error => logger.error({ error }, 'command failed'));
       }
     });
 
     if (session.method === 'pair' && !state.creds.registered) {
-      setTimeout(async () => {
-        try {
-          const code = await socket.requestPairingCode(session.phone);
-          this.update(session, { pairCode: code?.match(/.{1,4}/g)?.join('-') || code, status: 'pair-ready', error: null });
-        } catch (error) { this.update(session, { status: 'error', error: `Pairing failed: ${error.message}` }); }
-      }, 1200);
+      try {
+        let code;
+        let lastError;
+        // A fresh WhatsApp socket can need a moment before accepting the pair request.
+        for (let attempt = 1; attempt <= 3 && !code; attempt++) {
+          try { code = await socket.requestPairingCode(session.phone); }
+          catch (error) {
+            lastError = error;
+            if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1200));
+          }
+        }
+        if (!code) throw lastError || new Error('WhatsApp did not return a pairing code.');
+        this.update(session, {
+          pairCode: code?.replace(/\s|-/g, '').match(/.{1,4}/g)?.join('-') || code,
+          status: 'pair-ready',
+          error: null
+        });
+      } catch (error) {
+        this.update(session, { status: 'error', error: `Pairing failed: ${error.message}` });
+        throw error;
+      }
     }
     return socket;
   }
