@@ -10,7 +10,8 @@
     "check": "node --check index.js && node --check id.js && node --check msg.js && node --check pair.js && node --check reply.js && node --check config.js"
   },
   "engines": {
-    "node": ">=18.18.0"
+    "node": "24.x",
+    "npm": ">=10"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
