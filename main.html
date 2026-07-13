@@ -23,10 +23,10 @@
         <div class="result" id="qrResult"><img id="qrImage" alt="WhatsApp QR code"><div class="status" id="qrStatus">Waiting for QR…</div></div>
       </section>
       <section class="panel" id="pairPanel">
-        <div class="field"><label>Session name</label><input id="pairId" placeholder="e.g. sahan-main" autocomplete="off"></div>
+        <div class="field"><label>Session name (optional)</label><input id="pairId" placeholder="Leave blank to use your phone number" autocomplete="off"></div>
         <div class="field"><label>WhatsApp phone number</label><input id="phone" type="tel" inputmode="numeric" placeholder="94771234567" autocomplete="tel"><div class="hint">Include country code. Do not type +, spaces or dashes.</div></div>
         <button class="action" id="pairButton">Request pair code</button>
-        <div class="result" id="pairResult"><div class="hint">YOUR PAIRING CODE</div><div class="code" id="pairCode">••••-••••</div><div class="status" id="pairStatus">Waiting for code…</div></div>
+        <div class="result" id="pairResult"><div class="hint">YOUR PAIRING CODE · TAP TO COPY</div><div class="code" id="pairCode" role="button" tabindex="0" title="Copy pairing code">••••-••••</div><div class="status" id="pairStatus">Waiting for code…</div><div class="hint" style="margin-top:16px;line-height:1.7">1. Open WhatsApp on your phone<br>2. Go to Linked devices → Link a device<br>3. Choose “Link with phone number instead”<br>4. Enter the code shown above</div></div>
       </section>
       <button class="danger" id="remove" hidden>Remove selected session</button>
     </main>
@@ -37,9 +37,62 @@
   document.querySelectorAll('.tab').forEach(button=>button.onclick=()=>{document.querySelectorAll('.tab,.panel').forEach(x=>x.classList.remove('active'));button.classList.add('active');$('#'+button.dataset.panel+'Panel').classList.add('active')});
   const escapeHtml=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   async function request(url,options){const response=await fetch(url,{headers:{'Content-Type':'application/json'},...options});const data=await response.json();if(!response.ok)throw new Error(data.error||'Request failed');return data}
-  async function create(method){const button=$('#'+method+'Button'),id=$('#'+method+'Id').value.trim(),phone=$('#phone').value;button.disabled=true;try{const data=await request('/api/sessions',{method:'POST',body:JSON.stringify({id,method,phone})});activeId=data.session.id;qrFetched='';$('#'+method+'Result').classList.add('show');await refresh()}catch(e){alert(e.message)}finally{button.disabled=false}}
+  async function create(method){const button=$('#'+method+'Button'),phone=$('#phone').value.replace(/\D/g,''),id=$('#'+method+'Id').value.trim()||(method==='pair'?phone:'');button.disabled=true;button.textContent=method==='pair'?'Generating code…':'Generating QR…';try{const data=await request('/api/sessions',{method:'POST',body:JSON.stringify({id,method,phone})});activeId=data.session.id;qrFetched='';$('#'+method+'Result').classList.add('show');if(method==='pair'&&data.session.pairCode)$('#pairCode').textContent=data.session.pairCode;await refresh()}catch(e){alert(e.message)}finally{button.disabled=false;button.textContent=method==='pair'?'Request pair code':'Generate QR code'}}
   $('#qrButton').onclick=()=>create('qr');$('#pairButton').onclick=()=>create('pair');
-  async function refresh(){try{const {sessions}=await request('/api/sessions');$('#count').textContent=sessions.length;$('#sessions').innerHTML=sessions.length?sessions.map(s=>`<button class="session ${s.id===activeId?'active':''}" data-id="${escapeHtml(s.id)}"><i class="dot ${s.status==='open'?'open':''}"></i><span><b>${escapeHtml(s.id)}</b><small>${escapeHtml(s.status)}</small></span></button>`).join(''):'<div class="empty">No sessions yet. Create one using QR or a pairing code.</div>';document.querySelectorAll('.session').forEach(x=>x.onclick=()=>{activeId=x.dataset.id;qrFetched='';refresh()});const current=sessions.find(s=>s.id===activeId);$('#remove').hidden=!current;if(current){if(current.method==='pair'||current.pairCode){$('#pairResult').classList.add('show');$('#pairCode').textContent=current.pairCode||'••••-••••';$('#pairStatus').textContent=current.status+(current.error?' · '+current.error:'')}if(current.method==='qr'){ $('#qrResult').classList.add('show');$('#qrStatus').textContent=current.status+(current.error?' · '+current.error:'');if(current.qr&&qrFetched!==current.qr){const q=await request('/api/sessions/'+encodeURIComponent(current.id)+'/qr');$('#qrImage').src=q.dataUrl;qrFetched=current.qr}if(current.status==='open')$('#qrImage').removeAttribute('src')}}} }catch(e){console.error(e)}}
+  async function refresh() {
+    try {
+      const { sessions } = await request('/api/sessions');
+      $('#count').textContent = sessions.length;
+      $('#sessions').innerHTML = sessions.length
+        ? sessions.map(session => `
+          <button class="session ${session.id === activeId ? 'active' : ''}" data-id="${escapeHtml(session.id)}">
+            <i class="dot ${session.status === 'open' ? 'open' : ''}"></i>
+            <span><b>${escapeHtml(session.id)}</b><small>${escapeHtml(session.status)}</small></span>
+          </button>`).join('')
+        : '<div class="empty">No sessions yet. Create one using QR or a pairing code.</div>';
+
+      document.querySelectorAll('.session').forEach(element => {
+        element.onclick = () => {
+          activeId = element.dataset.id;
+          qrFetched = '';
+          refresh();
+        };
+      });
+
+      const current = sessions.find(session => session.id === activeId);
+      $('#remove').hidden = !current;
+      if (!current) return;
+
+      if (current.method === 'pair' || current.pairCode) {
+        const pairMessages = {
+          'pair-ready': 'Code ready. Enter it in WhatsApp Linked devices.',
+          open: 'Connected successfully. Bot commands are ready.',
+          connecting: 'Connecting to WhatsApp…',
+          closed: 'Connection closed. Retrying…',
+          'logged-out': 'Device was logged out. Create a new pairing code.',
+          error: 'Could not generate the code.'
+        };
+        $('#pairResult').classList.add('show');
+        $('#pairCode').textContent = current.pairCode || (current.status === 'open' ? 'CONNECTED' : '••••-••••');
+        $('#pairStatus').textContent =
+          (pairMessages[current.status] || current.status) + (current.error ? ` · ${current.error}` : '');
+      }
+
+      if (current.method === 'qr') {
+        $('#qrResult').classList.add('show');
+        $('#qrStatus').textContent = current.status + (current.error ? ` · ${current.error}` : '');
+        if (current.qr && qrFetched !== current.qr) {
+          const qr = await request(`/api/sessions/${encodeURIComponent(current.id)}/qr`);
+          $('#qrImage').src = qr.dataUrl;
+          qrFetched = current.qr;
+        }
+        if (current.status === 'open') $('#qrImage').removeAttribute('src');
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  $('#pairCode').onclick=async()=>{const code=$('#pairCode').textContent.replace(/-/g,'');if(!code||code.includes('•'))return;try{await navigator.clipboard.writeText(code);$('#pairStatus').textContent='Pairing code copied.'}catch(e){console.error(e)}};
   $('#remove').onclick=async()=>{if(!activeId||!confirm('Remove this session and its saved credentials?'))return;await request('/api/sessions/'+encodeURIComponent(activeId),{method:'DELETE'});activeId=null;qrFetched='';$('#qrResult').classList.remove('show');$('#pairResult').classList.remove('show');refresh()};
   request('/api/config').then(x=>{$('#botName').textContent=x.botName;document.title=x.botName+' · Linked Device'});refresh();setInterval(refresh,1800);
 </script>
